@@ -1,4 +1,16 @@
+/*
+ * Copyright (c) 2019 Donald Purnhagen
+ * 
+ * ToDo: Write documentation!
+ */
+
 #include <FastLED.h>
+
+#define SERIAL_DEBUG
+
+#define HUE_MODE_SINGLE 0
+#define HUE_MODE_MULTI 1
+byte iHueMode = HUE_MODE_SINGLE;
 
 /* BEGIN - LED Ring Variables */
 #define LED_DATA_PIN 5
@@ -10,7 +22,9 @@
 #define LED_COLOR_MODEL GRB
 // Initial brightness.
 byte iBrightness = 127;
-//byte iHue = HUE_ORANGE;
+byte iHue = HUE_ORANGE;
+// Evenly divide the hue range: 256 / 8 = 32
+static const byte iHueAdjust = (256 / LED_NUMBER);
 CRGB leds[LED_NUMBER];
 
 /* BEGIN – Encoder Variables */
@@ -19,27 +33,47 @@ CRGB leds[LED_NUMBER];
 #define ENCODER_SWITCH_PIN 7
 #define ENCODER_POS_MIN 1
 #define ENCODER_POS_MAX 20
-//const double ENCODER_POS_PER_LED = ((double)ENCODER_POS_MAX / LED_NUMBER);
-int iEncoderPos = 1;
-int iEncoderPosLast = 1;
-int iVal;
-int iValLast;
+// Keep track of encoder position value.
+byte iEncoderPos = 1;
+byte iEncoderPosLast = 1;
+byte iVal;
+byte iValLast;
 boolean bCW;
+// Keep track of encoder switch state.
+boolean bPressed = false;
+unsigned long ulPressedAt = 0;
 
 void doSetShow() {
-    byte iLastLed = map(iEncoderPos, ENCODER_POS_MIN, ENCODER_POS_MAX, 0, LED_NUMBER); //iEncoderPos / ENCODER_POS_PER_LED;
-    Serial.print("Last LED: ");
-    Serial.println(iLastLed);
+    byte iLastLed = map(iEncoderPos, ENCODER_POS_MIN, ENCODER_POS_MAX, 1, LED_NUMBER);
     for (int i = 0; i < LED_NUMBER; i++) {
       byte iV = 0;
       if (i < iLastLed) {
-        iV = iBrightness; //(i * i + iBrightness / 4);
+        switch (iHueMode) {
+        case HUE_MODE_SINGLE:
+          iV = map(i, 0, LED_NUMBER, LED_BRIGHTNESS_MIN, LED_BRIGHTNESS_MAX);
+          break;
+        case HUE_MODE_MULTI:
+          iV = iBrightness;
+          break;
+        }
       }
-//      leds[iLED] = CHSV(iHue, 255, iV);
-      // Evenly divide the hue range: 256 / 8 = 32
-      leds[map(i, 0, LED_NUMBER - 1, LED_NUMBER - 1, 0)] = CHSV((i * 32), 193, iV);
+      switch (iHueMode) {
+      case HUE_MODE_SINGLE:
+        leds[map(i, 0, LED_NUMBER - 1, LED_NUMBER - 1, 0)] = CHSV(iHue, 255, iV);
+        break;
+      case HUE_MODE_MULTI:
+        leds[map(i, 0, LED_NUMBER - 1, LED_NUMBER - 1, 0)] = CHSV((i * iHueAdjust), 255, iV);
+        break;
+      }
     }
     FastLED.show();  
+#if defined (SERIAL_DEBUG)
+    Serial.print(iEncoderPos);
+    Serial.print(",");
+    Serial.print(iLastLed);
+    Serial.print(",");
+    Serial.println(iBrightness);
+#endif //defined (SERIAL_DEBUG)
 }
 
 void setup() {
@@ -54,12 +88,12 @@ void setup() {
   delay(1000);
   FastLED.addLeds<LED_TYPE, LED_DATA_PIN, LED_COLOR_MODEL>(leds, LED_NUMBER).setCorrection(TypicalLEDStrip);
   FastLED.setBrightness(iBrightness);
-  FastLED.show();
-  
+
+#if defined (SERIAL_DEBUG)
   Serial.begin(9600);
-  Serial.println("Start");
-  Serial.print("Brightness: ");
-  Serial.println(iBrightness);
+  Serial.println("EncoderPos,LastLed,Brightness");  
+#endif //defined (SERIAL_DEBUG)
+
   doSetShow();
 }
 
@@ -82,8 +116,6 @@ void loop() {
         }
         bCW = false;
       }
-      Serial.print("Encoder Position: ");
-      Serial.println(iEncoderPos);
     }
   }
   iValLast = iVal;
@@ -93,21 +125,49 @@ void loop() {
     iEncoderPosLast = iEncoderPos;
   }
 
+  /*
+   * Still need to work on debouncing the switch. 
+   * I think I need to maintain the time of release as well.
+   */
   if (!digitalRead(ENCODER_SWITCH_PIN)) {
-    static unsigned long ulLastEntry = 0;
-    unsigned long ulThisEntry = millis();
-    // 200 ms debounce test.
-    if (80 < (ulThisEntry - ulLastEntry)) {
-//      iHue += HUE_ORANGE;
-      iBrightness += LED_BRIGHTNESS_INC;
-      if ((LED_BRIGHTNESS_MIN > iBrightness) || (LED_BRIGHTNESS_MAX < iBrightness)) {
-        iBrightness = LED_BRIGHTNESS_MIN;
-      }
-      FastLED.setBrightness(iBrightness);
-      doSetShow();
-      Serial.print("Brightness: ");
-      Serial.println(iBrightness);
+    // Switch depressed.
+    if (!bPressed) {
+      bPressed = true;
+      ulPressedAt = millis();
+#if defined (SERIAL_DEBUG)
+      Serial.print("Pressed: ");
+      Serial.println(ulPressedAt);
+#endif //defined (SERIAL_DEBUG)
     }
-    ulLastEntry = ulThisEntry;
   }
+  else {
+    if (bPressed) {
+      unsigned long ulDuration = (millis() - ulPressedAt);
+      if (999 < ulDuration) {
+        iHueMode = ++iHueMode % 2;
+#if defined (SERIAL_DEBUG)
+        Serial.print("New Mode: ");
+        Serial.println(iHueMode);
+#endif //defined (SERIAL_DEBUG)
+        doSetShow();
+      }
+      else if (79 < ulDuration) {
+        switch (iHueMode) {
+        case HUE_MODE_SINGLE:
+          iHue += HUE_ORANGE;
+          break;
+        case HUE_MODE_MULTI:
+          iBrightness += LED_BRIGHTNESS_INC;
+          if ((LED_BRIGHTNESS_MIN > iBrightness) || (LED_BRIGHTNESS_MAX < iBrightness)) {
+            iBrightness = LED_BRIGHTNESS_MIN;
+          }
+          FastLED.setBrightness(iBrightness);
+          break;
+        }
+        doSetShow();
+      }
+      bPressed = false;
+    }
+  }
+
 }
